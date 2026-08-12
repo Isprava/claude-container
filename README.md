@@ -51,14 +51,60 @@ Run from the **root of any project**; that directory is mounted read-write and C
 ~/claude-container/run.sh --rebuild            # force docker image rebuild
 ```
 
-Everything after `--` is passed straight to `claude`. Tip: alias it, e.g. `alias dangerous_claude=~/claude-container/run.sh`.
+Everything after `--` is passed straight to `claude`.
+
+### Shell alias
+
+Add to `~/.zshrc` (or `~/.bashrc`):
+
+```sh
+# Claude Code in a sandboxed container (bypass permissions, no SSH) — see `dangerous_claude --help`
+alias dangerous_claude='~/claude-container/run.sh'
+```
+
+Then from any project root:
+
+```sh
+dangerous_claude                   # plain start
+dangerous_claude -c                # continue last session
+dangerous_claude --block-net       # locked-down internet (see below)
+```
+
+### Restricting internet access
+
+`--block-net` turns on the egress firewall: **all** outbound traffic is dropped except DNS, the host port forwards, Anthropic/Claude hosts (`api.anthropic.com`, `claude.ai`, `platform.claude.com`, `claude.com`, `mcp-proxy.anthropic.com`), and GitHub (`github.com`, `api.github.com`, `codeload.github.com`, `objects.githubusercontent.com`). IPv6 egress is dropped entirely so the allowlist can't be bypassed over v6.
+
+```sh
+# Strictest: only Claude + GitHub + host DB/Redis reachable
+dangerous_claude --block-net
+
+# Allow npm/npx too (needed for npx-based MCP servers and npm install)
+ALLOWED_DOMAINS="api.anthropic.com claude.ai platform.claude.com claude.com \
+  mcp-proxy.anthropic.com github.com api.github.com codeload.github.com \
+  objects.githubusercontent.com registry.npmjs.org" dangerous_claude --block-net
+
+# No GitHub at all: Claude API/auth only — nothing else on the internet
+ALLOWED_DOMAINS="api.anthropic.com claude.ai platform.claude.com claude.com" \
+  dangerous_claude --block-net
+
+# Allow one extra site for WebFetch (e.g. your own docs host)
+ALLOWED_DOMAINS="api.anthropic.com claude.ai platform.claude.com claude.com \
+  mcp-proxy.anthropic.com github.com api.github.com codeload.github.com \
+  objects.githubusercontent.com docs.example.com" dangerous_claude --block-net
+```
+
+Note: `ALLOWED_DOMAINS` **replaces** the default list, so include the Anthropic/Claude hosts (and GitHub, if you want git to work) in any custom list. Handy aliases for the common variants:
+
+```sh
+alias dangerous_claude_offline='ALLOWED_DOMAINS="api.anthropic.com claude.ai platform.claude.com claude.com" ~/claude-container/run.sh --block-net'
+alias dangerous_claude_npm='ALLOWED_DOMAINS="api.anthropic.com claude.ai platform.claude.com claude.com mcp-proxy.anthropic.com github.com api.github.com codeload.github.com objects.githubusercontent.com registry.npmjs.org" ~/claude-container/run.sh --block-net'
+```
 
 ### Environment variables
 
 ```sh
-FORWARD_PORTS="5432 6379 3000 8080" ~/claude-container/run.sh   # host ports reachable as localhost inside
-ALLOWED_DOMAINS="api.anthropic.com claude.ai platform.claude.com registry.npmjs.org" \
-  ~/claude-container/run.sh --block-net                          # replace the firewall allowlist
+FORWARD_PORTS="5432 6379 3000 8080" dangerous_claude   # host ports reachable as localhost inside
+ALLOWED_DOMAINS="..." dangerous_claude --block-net     # replace the firewall allowlist (see above)
 ```
 
 Default forwarded ports: `5432 6379 3000 6400 8500` (Postgres, Redis, Rails, etc.) — the container reaches the host's services at `localhost:<port>` via socat.
