@@ -1,0 +1,15 @@
+# sandbox-only Claude login — never commit
+container-credentials.json
+.credentials.json
+
+# local state — machine-specific, may contain secrets
+claude.json
+.claude/
+.codemap/
+.DS_Store
+
+# runtime drop-box and caches: keep the folders, ignore the contents
+shared/*
+!shared/.gitkeep
+bundle-cache/*
+!bundle-cache/.gitkeep
