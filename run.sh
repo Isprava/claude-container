@@ -42,7 +42,7 @@ OPTIONS
 
 ENVIRONMENT VARIABLES
   FORWARD_PORTS    Host ports reachable as localhost inside the container.
-                   Default: "5432 6379 3000 6400"  (Postgres, Redis, Rails, 6400)
+                   Default: "5432 6379 3000 6400 8500"  (Postgres, Redis, Rails, ...)
                    e.g. FORWARD_PORTS="5432 6379 3000 8080" run.sh
   ALLOWED_DOMAINS  With --block-net: replace the allowed-domain list.
                    e.g. ALLOWED_DOMAINS="api.anthropic.com claude.ai \

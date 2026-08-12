@@ -100,14 +100,32 @@ alias dangerous_claude_offline='ALLOWED_DOMAINS="api.anthropic.com claude.ai pla
 alias dangerous_claude_npm='ALLOWED_DOMAINS="api.anthropic.com claude.ai platform.claude.com claude.com mcp-proxy.anthropic.com github.com api.github.com codeload.github.com objects.githubusercontent.com registry.npmjs.org" ~/claude-container/run.sh --block-net'
 ```
 
+### Port forwarding
+
+The container reaches the host's local services at `localhost:<port>` via socat forwards set up by `entrypoint.sh`. Forwarded by default:
+
+| Port | Service |
+|---|---|
+| 5432 | Postgres |
+| 6379 | Redis |
+| 3000 | Rails / dev server |
+| 6400 | project-specific service |
+| 8500 | project-specific service (e.g. Consul) |
+
+Override the list with `FORWARD_PORTS` (replaces the defaults, so repeat any you still need):
+
+```sh
+FORWARD_PORTS="5432 6379 3000 8080" dangerous_claude
+```
+
+These forwards keep working even under `--block-net` — the firewall always allows traffic to the Docker host gateway.
+
 ### Environment variables
 
 ```sh
 FORWARD_PORTS="5432 6379 3000 8080" dangerous_claude   # host ports reachable as localhost inside
 ALLOWED_DOMAINS="..." dangerous_claude --block-net     # replace the firewall allowlist (see above)
 ```
-
-Default forwarded ports: `5432 6379 3000 6400 8500` (Postgres, Redis, Rails, etc.) — the container reaches the host's services at `localhost:<port>` via socat.
 
 ## What's shared with the host
 
