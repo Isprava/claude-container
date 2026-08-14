@@ -38,6 +38,21 @@ USER root
 ENV PATH=/Users/manthan/.rbenv/shims:/Users/manthan/.rbenv/bin:$PATH
 ENV BUNDLE_PATH=/Users/manthan/.cache/bundle
 
+# Go toolchain (scrum-updates et al). Version matches the project's go.mod;
+# GOTOOLCHAIN=auto (the default) fetches a newer patch release into GOPATH if
+# a go.mod ever requires one. GOPATH (/Users/manthan/go) is a host-persisted
+# mount at runtime — see run.sh — so module downloads survive across runs.
+ARG GO_VERSION=1.25.7
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
+    | tar -C /usr/local -xz
+ENV PATH=/usr/local/go/bin:/Users/manthan/go/bin:$PATH
+
+# air — live-reload runner used by scrum-updates' `make run`. Installed to
+# /usr/local/bin so the runtime GOPATH mount can't shadow it.
+RUN GOFLAGS=-modcacherw GOPATH=/tmp/gopath GOBIN=/usr/local/bin \
+      /usr/local/go/bin/go install github.com/air-verse/air@latest \
+    && rm -rf /tmp/gopath
+
 # GitHub CLI from the official apt repo (Debian's gh is years old)
 RUN mkdir -p -m 755 /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \

@@ -7,11 +7,12 @@ Run Claude Code with `--dangerously-skip-permissions` safely, inside a Docker sa
 | File | Purpose |
 |---|---|
 | `run.sh` | Launcher — builds the image if needed and starts the container from your project dir |
-| `Dockerfile` | Image: Node 22 + Claude Code, Ruby 3.4.1 (rbenv), gh CLI, uv/uvx, bun, no openssh |
+| `Dockerfile` | Image: Node 22 + Claude Code, Ruby 3.4.1 (rbenv), Go 1.25 + air, gh CLI, uv/uvx, bun, no openssh |
 | `entrypoint.sh` | Runs as root inside the container: host port forwards (socat), gh config copy, optional firewall, then drops to the normal user and execs `claude` |
 | `init-firewall.sh` | `--block-net` iptables rules: drop all egress except Anthropic/Claude hosts, GitHub, DNS, and the host port forwards |
 | `shared/` | Read-write drop-box mounted into the container (screenshots, CSVs, dumps). Also holds two optional config files: `env-passthrough` (env vars to forward, one per line) and `extra-mounts` (extra host paths to bind-mount, one absolute path per line, `:ro` for read-only). Contents are git-ignored |
 | `bundle-cache/` | Persists gems installed inside the container (`BUNDLE_PATH`) across runs. Git-ignored |
+| `go-cache/` | Persists the container's `GOPATH` (Go module downloads, `go install`ed binaries) across runs. Git-ignored |
 | `container-credentials.json` | The sandbox's own Claude OAuth login — created on first run, **never committed** |
 
 ## Prerequisites
@@ -133,7 +134,7 @@ ALLOWED_DOMAINS="..." dangerous_claude --block-net     # replace the firewall al
 - `~/.claude` (settings, plugins, skills, memory) and `~/.claude.json` (MCP servers)
 - `~/.gitconfig` and `~/.config/gh` (both read-only; gh login is copied to a writable container-local config at startup, `git_protocol` forced to https, `git@github.com:`/ssh remotes auto-rewritten to HTTPS)
 - Host Postgres/Redis/Rails via the port forwards
-- `shared/` drop-box, `bundle-cache/` gems, and any paths listed in `shared/extra-mounts`
+- `shared/` drop-box, `bundle-cache/` gems, `go-cache/` GOPATH, and any paths listed in `shared/extra-mounts`
 - Env vars listed in `shared/env-passthrough` — nothing else leaks in
 
 `~/.claude-mem` is deliberately **not** shared (a container-spawned worker once corrupted the host's SQLite state); the sandbox gets its own ephemeral copy.

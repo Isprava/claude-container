@@ -13,3 +13,5 @@ shared/*
 !shared/.gitkeep
 bundle-cache/*
 !bundle-cache/.gitkeep
+go-cache/*
+!go-cache/.gitkeep

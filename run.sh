@@ -86,12 +86,19 @@ WHAT'S SHARED WITH THE HOST
   - Host Postgres/Redis/Rails via the FORWARD_PORTS socat forwards
   - ~/claude-container/bundle-cache: gems installed in the container
     (BUNDLE_PATH) persist here across runs
+  - ~/claude-container/go-cache: the container's GOPATH (Go module downloads,
+    go-installed binaries) persists here across runs
   - Env vars listed in shared/env-passthrough (see above)
 
 RUBY
   - Image has its own Linux rbenv + Ruby 3.4.1 (host ~/.rbenv is macOS
     binaries and is never mounted). First "bundle install" in a project
     fills bundle-cache; later runs reuse it.
+
+GO
+  - Image ships Go (see GO_VERSION in the Dockerfile) plus air (live
+    reload, used by scrum-updates' "make run"). GOPATH is the go-cache
+    mount, so module downloads persist across runs.
 
 WHAT'S BLOCKED / MISSING
   - No SSH: openssh purged from image, ~/.ssh never mounted
@@ -201,6 +208,7 @@ exec docker run -it --rm \
   -v "$CRED:/Users/manthan/.claude/.credentials.json" \
   -v "$DIR/shared:/Users/manthan/claude-container/shared" \
   -v "$DIR/bundle-cache:/Users/manthan/.cache/bundle" \
+  -v "$DIR/go-cache:/Users/manthan/go" \
   ${GITCONFIG_MOUNT[@]+"${GITCONFIG_MOUNT[@]}"} \
   ${GH_MOUNT[@]+"${GH_MOUNT[@]}"} \
   ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"} \
