@@ -1,5 +1,16 @@
 FROM node:22-bookworm
 
+# The container user mirrors the host user: same name, same uid, same absolute
+# home path, so every absolute path in ~/.claude.json, settings.json, and MCP
+# env vars resolves identically inside and out. run.sh passes these as
+# --build-arg from `id -un` / `id -u` / $HOME; the defaults below only exist so
+# a bare `docker build` still works.
+ARG SANDBOX_USER=sandbox
+ARG SANDBOX_UID=501
+ARG SANDBOX_HOME=/home/sandbox
+ENV SANDBOX_USER=${SANDBOX_USER}
+ENV SANDBOX_HOME=${SANDBOX_HOME}
+
 # Dev tooling for Claude Code + npx/uvx-based MCP servers. No SSH: openssh is
 # explicitly purged so the container cannot ssh anywhere.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,6 +23,88 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y openssh-client openssh-server 2>/dev/null; \
     apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 
+# Shared libraries Chromium needs to launch, for Playwright browser tests
+# (`playwright install` downloads the browser but not these). Without them
+# headless_shell dies with "error while loading shared libraries: libnspr4.so".
+# Equivalent to `playwright install-deps chromium`, pinned here so it doesn't
+# depend on a project's Playwright version or need root at test time.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libnspr4 libnss3 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
+      libcups2 libdbus-1-3 libdrm2 libgbm1 libxkbcommon0 libxcomposite1 \
+      libxdamage1 libxfixes3 libxrandr2 libpango-1.0-0 libcairo2 libasound2 \
+      fonts-liberation fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
+
+# Chromium itself, baked into the image so browser tests work with no download
+# — including under --block-net, where a runtime `playwright install` can't
+# reach the CDN. Browsers live in /opt/ms-playwright-base; entrypoint.sh seeds
+# them into PLAYWRIGHT_BROWSERS_PATH (a host-persisted mount) on first run, so
+# a project needing a different Playwright version can install alongside them
+# and have that persist too. Bump PLAYWRIGHT_VERSION to refresh the baked set.
+ARG PLAYWRIGHT_VERSION=1.62.1
+RUN PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright-base PLAYWRIGHT_SKIP_BROWSER_GC=1 \
+      npx --yes playwright@${PLAYWRIGHT_VERSION} install chromium ffmpeg \
+    && chmod -R a+rX /opt/ms-playwright-base \
+    && rm -rf /root/.npm
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+# Playwright globally: the npm package so ad-hoc scripts can `require("playwright")`
+# from any directory without a local node_modules (NODE_PATH makes the global
+# install resolvable), and @playwright/mcp so Claude has browser tools in every
+# project. Both are baked rather than npx'd because npx can't reach the registry
+# under --block-net. Note the ecc plugin's own "playwright" MCP runs with
+# --extension, which drives host Chrome over the browser extension bridge and so
+# cannot work in here — this one drives the container's headless Chromium.
+ARG PLAYWRIGHT_MCP_VERSION=0.0.79
+RUN npm install -g playwright@${PLAYWRIGHT_VERSION} @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} \
+    && rm -rf /root/.npm
+ENV NODE_PATH=/usr/local/lib/node_modules
+ENV PLAYWRIGHT_SKIP_BROWSER_GC=1
+
+# @playwright/mcp bundles its OWN nested Playwright, pinned to a different
+# version than the one above, and Playwright ties each release to an exact
+# browser revision — so the MCP server would otherwise start up, find only the
+# other revision, and try to download chromium-1237 at runtime (which fails
+# outright under --block-net). Install whatever revision the nested copy asks
+# for, driven by its own CLI so the two stay in lockstep when either version is
+# bumped. Both revisions coexist in the base dir; the stamp covers both, so
+# bumping either version re-seeds the persisted cache.
+#
+# PLAYWRIGHT_SKIP_BROWSER_GC is essential here and at runtime: `playwright
+# install` garbage-collects revisions its own version doesn't reference, so
+# without it this step deletes the browsers the layer above just installed —
+# and at runtime any project running `playwright install` would wipe revisions
+# the MCP server and other projects still depend on from the shared cache.
+RUN PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright-base PLAYWRIGHT_SKIP_BROWSER_GC=1 \
+      node /usr/local/lib/node_modules/@playwright/mcp/node_modules/playwright/cli.js \
+      install chromium ffmpeg \
+    && echo "${PLAYWRIGHT_VERSION}+mcp${PLAYWRIGHT_MCP_VERSION}" \
+         > /opt/ms-playwright-base/.pw-version \
+    && chmod -R a+rX /opt/ms-playwright-base \
+    && rm -rf /root/.npm /root/.cache
+
+# MCP config for the headless browser server, kept in /etc rather than in
+# ~/.claude.json: that file is a live bind mount of the host's, so writing to it
+# would push a container-only server into every session on the Mac too.
+# entrypoint.sh passes this to claude with --mcp-config, which is additive.
+#
+# --headless is load-bearing, not cosmetic: with it Playwright resolves the
+# bundled chromium to the headless_shell binary, and headed Chrome's crashpad
+# handler dies with SIGTRAP on aarch64 in here. --browser only accepts
+# chrome/chromium/firefox/webkit/msedge, so the shell cannot be named directly
+# (naming it falls through to system Chrome at /opt/google/chrome). Prefer
+# headless in scripts too — plain chromium.launch() already picks the shell.
+RUN mkdir -p /etc/claude && printf '%s\n' \
+      '{' \
+      '  "mcpServers": {' \
+      '    "playwright-headless": {' \
+      '      "command": "playwright-mcp",' \
+      '      "args": ["--headless", "--isolated", "--browser", "chromium"]' \
+      '    }' \
+      '  }' \
+      '}' \
+      > /etc/claude/mcp-playwright.json
+
 # uv/uvx for python-based MCP servers (jira / mcp-atlassian, eks)
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
@@ -20,32 +113,47 @@ RUN curl -fsSL https://bun.sh/install | env BUN_INSTALL=/usr/local bash
 
 RUN npm install -g @anthropic-ai/claude-code
 
-# Same home path as the Mac host so all absolute paths in ~/.claude.json,
-# settings.json, and MCP env vars resolve identically inside the container.
-RUN useradd -m -u 501 -d /Users/manthan -s /bin/zsh manthan
+# ccstatusline: the host runs it via `npx -y ccstatusline@latest`, which in here
+# would re-download on every fresh container and fail outright under
+# --block-net (the npx cache lives in ~/.npm, which is not a host mount). Bake
+# it in so the statusline renders instantly and offline; ~/.claude/settings.json
+# prefers this binary and falls back to npx on the Mac, where it is not global.
+ARG CCSTATUSLINE_VERSION=2.2.27
+RUN npm install -g ccstatusline@${CCSTATUSLINE_VERSION} && rm -rf /root/.npm
+
+# See the SANDBOX_* args at the top: same name/uid/home as the host user.
+RUN useradd -m -u ${SANDBOX_UID} -d ${SANDBOX_HOME} -s /bin/zsh ${SANDBOX_USER}
 
 # Container-local rbenv + Ruby (host ~/.rbenv is macOS binaries — unusable
-# here). Installed as user manthan so gem installs work without sudo. Gems
+# here). Installed as the sandbox user so gem installs work without sudo. Gems
 # land in BUNDLE_PATH, which run.sh persists on the host across containers.
-USER manthan
-RUN git clone --depth 1 https://github.com/rbenv/rbenv.git /Users/manthan/.rbenv \
-    && git clone --depth 1 https://github.com/rbenv/ruby-build.git /Users/manthan/.rbenv/plugins/ruby-build \
-    && /Users/manthan/.rbenv/bin/rbenv install 3.4.1 \
-    && /Users/manthan/.rbenv/bin/rbenv global 3.4.1 \
-    && RBENV_VERSION=3.4.1 /Users/manthan/.rbenv/shims/gem install bundler -v 2.6.7 \
-    && /Users/manthan/.rbenv/bin/rbenv rehash
+USER ${SANDBOX_USER}
+RUN git clone --depth 1 https://github.com/rbenv/rbenv.git ${SANDBOX_HOME}/.rbenv \
+    && git clone --depth 1 https://github.com/rbenv/ruby-build.git ${SANDBOX_HOME}/.rbenv/plugins/ruby-build \
+    && ${SANDBOX_HOME}/.rbenv/bin/rbenv install 3.4.1 \
+    && ${SANDBOX_HOME}/.rbenv/bin/rbenv global 3.4.1 \
+    && RBENV_VERSION=3.4.1 ${SANDBOX_HOME}/.rbenv/shims/gem install bundler -v 2.6.7 \
+    && ${SANDBOX_HOME}/.rbenv/bin/rbenv rehash
 USER root
-ENV PATH=/Users/manthan/.rbenv/shims:/Users/manthan/.rbenv/bin:$PATH
-ENV BUNDLE_PATH=/Users/manthan/.cache/bundle
+ENV PATH=${SANDBOX_HOME}/.rbenv/shims:${SANDBOX_HOME}/.rbenv/bin:$PATH
+ENV BUNDLE_PATH=${SANDBOX_HOME}/.cache/bundle
 
 # Go toolchain (scrum-updates et al). Version matches the project's go.mod;
 # GOTOOLCHAIN=auto (the default) fetches a newer patch release into GOPATH if
-# a go.mod ever requires one. GOPATH (/Users/manthan/go) is a host-persisted
+# a go.mod ever requires one. GOPATH ($SANDBOX_HOME/go) is a host-persisted
 # mount at runtime — see run.sh — so module downloads survive across runs.
 ARG GO_VERSION=1.25.7
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-$(dpkg --print-architecture).tar.gz" \
     | tar -C /usr/local -xz
-ENV PATH=/usr/local/go/bin:/Users/manthan/go/bin:$PATH
+ENV PATH=/usr/local/go/bin:${SANDBOX_HOME}/go/bin:$PATH
+
+# Login shells (run.sh --shell, and anything spawning `bash -l`) source
+# /etc/profile, which overwrites PATH with a bare default and drops rbenv, Go,
+# and the global npm bin. Re-add them here so interactive shells see the same
+# toolchain the ENV PATH above gives the claude process.
+RUN printf '%s\n' \
+      "export PATH=\"/usr/local/go/bin:${SANDBOX_HOME}/go/bin:${SANDBOX_HOME}/.rbenv/shims:${SANDBOX_HOME}/.rbenv/bin:\$PATH\"" \
+      > /etc/profile.d/10-sandbox-path.sh
 
 # air — live-reload runner used by scrum-updates' `make run`. Installed to
 # /usr/local/bin so the runtime GOPATH mount can't shadow it.
@@ -86,8 +194,8 @@ COPY entrypoint.sh init-firewall.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/init-firewall.sh
 
 # Entrypoint starts as root (needed for iptables in --block-net mode) and
-# drops to user manthan via setpriv before exec'ing claude.
-ENV HOME=/Users/manthan
+# drops to the sandbox user via setpriv before exec'ing claude.
+ENV HOME=${SANDBOX_HOME}
 ENV DISABLE_AUTOUPDATER=1
 ENV IS_SANDBOX=1
 

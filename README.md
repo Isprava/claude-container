@@ -7,12 +7,13 @@ Run Claude Code with `--dangerously-skip-permissions` safely, inside a Docker sa
 | File | Purpose |
 |---|---|
 | `run.sh` | Launcher — builds the image if needed and starts the container from your project dir |
-| `Dockerfile` | Image: Node 22 + Claude Code, Ruby 3.4.1 (rbenv), Go 1.25 + air, gh CLI, uv/uvx, bun, no openssh |
+| `Dockerfile` | Image: Node 22 + Claude Code, Ruby 3.4.1 (rbenv), Go 1.25 + air, gh CLI, uv/uvx, bun, Playwright Chromium, no openssh |
 | `entrypoint.sh` | Runs as root inside the container: host port forwards (socat), gh config copy, optional firewall, then drops to the normal user and execs `claude` |
 | `init-firewall.sh` | `--block-net` iptables rules: drop all egress except Anthropic/Claude hosts, GitHub, DNS, and the host port forwards |
 | `shared/` | Read-write drop-box mounted into the container (screenshots, CSVs, dumps). Also holds two optional config files: `env-passthrough` (env vars to forward, one per line) and `extra-mounts` (extra host paths to bind-mount, one absolute path per line, `:ro` for read-only). Contents are git-ignored |
 | `bundle-cache/` | Persists gems installed inside the container (`BUNDLE_PATH`) across runs. Git-ignored |
 | `go-cache/` | Persists the container's `GOPATH` (Go module downloads, `go install`ed binaries) across runs. Git-ignored |
+| `playwright-cache/` | Persists Playwright's browser binaries (`PLAYWRIGHT_BROWSERS_PATH`) across runs. Seeded from the image's baked Chromium on first run. Git-ignored |
 | `container-credentials.json` | The sandbox's own Claude OAuth login — created on first run, **never committed** |
 
 ## Prerequisites
@@ -28,7 +29,7 @@ git clone <this-repo> ~/claude-container
 cd ~/claude-container && chmod +x run.sh
 ```
 
-Note: the scripts hardcode the home path `/Users/manthan` (host and container homes must match so absolute paths in `~/.claude.json` resolve). On another machine, replace it in `Dockerfile` and `run.sh` with your own home, including the uid on the `useradd` line (`id -u`).
+Note: the container user mirrors whoever runs `run.sh` — same name, same uid, same absolute home path, so absolute paths in `~/.claude.json` resolve identically on both sides. `run.sh` reads these from `id -un` / `id -u` / `$HOME` and passes them to the build as `SANDBOX_USER` / `SANDBOX_UID` / `SANDBOX_HOME`, so nothing is hardcoded and the repo works as-is on another machine or for another user. Switching users means rebuilding: `run.sh --rebuild`.
 
 First run builds the image (~10 min: it compiles Ruby):
 
@@ -134,10 +135,35 @@ ALLOWED_DOMAINS="..." dangerous_claude --block-net     # replace the firewall al
 - `~/.claude` (settings, plugins, skills, memory) and `~/.claude.json` (MCP servers)
 - `~/.gitconfig` and `~/.config/gh` (both read-only; gh login is copied to a writable container-local config at startup, `git_protocol` forced to https, `git@github.com:`/ssh remotes auto-rewritten to HTTPS)
 - Host Postgres/Redis/Rails via the port forwards
-- `shared/` drop-box, `bundle-cache/` gems, `go-cache/` GOPATH, and any paths listed in `shared/extra-mounts`
+- `shared/` drop-box, `bundle-cache/` gems, `go-cache/` GOPATH, `playwright-cache/` browsers, and any paths listed in `shared/extra-mounts`
 - Env vars listed in `shared/env-passthrough` — nothing else leaks in
 
 `~/.claude-mem` is deliberately **not** shared (a container-spawned worker once corrupted the host's SQLite state); the sandbox gets its own ephemeral copy.
+
+## Browsers / Playwright
+
+Headless Chromium works out of the box — the image ships both Chromium and the
+headless shell (plus ffmpeg for video) baked in at `/opt/ms-playwright-base`,
+along with the Debian libs Chromium needs to launch (`libnspr4`, `libnss3`, the
+ATK/CUPS/DRM/GBM/X/pango/asound set) and the Liberation + Noto emoji fonts.
+Without those libs Chromium dies with `error while loading shared libraries:
+libnspr4.so`, which is what a bare `node:22-bookworm` does.
+
+`entrypoint.sh` seeds the baked browsers into `PLAYWRIGHT_BROWSERS_PATH`
+(`/opt/ms-playwright`, the `playwright-cache/` mount) on first run, so:
+
+- `browserType.launch()` works with no download — including under `--block-net`
+- a project needing a Playwright version other than the baked one runs
+  `npx playwright install chromium` **once**, and it persists across runs
+- firefox/webkit aren't baked in (size); `npx playwright install firefox`
+  installs them into the same persisted cache
+
+Two caveats. Playwright pins each release to an exact browser revision, so a
+project on a different Playwright version fails with `Executable doesn't
+exist` until that one install runs — and that install needs network, so do it
+without `--block-net`. Bump `PLAYWRIGHT_VERSION` in the Dockerfile (currently
+1.62.1) to refresh what's baked. Note this is Playwright's own Chromium, which
+is unrelated to the `claude-in-chrome` MCP tools — those still drive host Chrome.
 
 ## What's blocked / missing
 

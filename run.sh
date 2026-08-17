@@ -58,8 +58,8 @@ ENVIRONMENT VARIABLES
                    Extra host folders bind-mounted into the container at
                    the same path (live, no copying). One absolute path per
                    line; append :ro for read-only. # comments allowed:
-                     /Users/manthan/Downloads/emails/email_dump
-                     /Users/manthan/some/reference:ro
+                     /Users/you/Downloads/emails/email_dump
+                     /Users/you/some/reference:ro
 
 WHAT'S SHARED WITH THE HOST
   - Current project dir (read-write, live bind mount)
@@ -88,6 +88,8 @@ WHAT'S SHARED WITH THE HOST
     (BUNDLE_PATH) persist here across runs
   - ~/claude-container/go-cache: the container's GOPATH (Go module downloads,
     go-installed binaries) persists here across runs
+  - ~/claude-container/playwright-cache: Playwright browser binaries persist
+    here across runs
   - Env vars listed in shared/env-passthrough (see above)
 
 RUBY
@@ -99,6 +101,13 @@ GO
   - Image ships Go (see GO_VERSION in the Dockerfile) plus air (live
     reload, used by scrum-updates' "make run"). GOPATH is the go-cache
     mount, so module downloads persist across runs.
+
+BROWSERS
+  - Chromium + headless shell are baked into the image with all the libs
+    they need, so Playwright launches with no download, even --block-net.
+    Browsers live in the playwright-cache mount; a project on a different
+    Playwright version runs "npx playwright install chromium" once (needs
+    net) and it persists. firefox/webkit install the same way.
 
 WHAT'S BLOCKED / MISSING
   - No SSH: openssh purged from image, ~/.ssh never mounted
@@ -129,8 +138,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# The image mirrors the host user (same name, uid, and absolute home path) so
+# every absolute path in ~/.claude.json and friends resolves identically on both
+# sides. Nothing about the user is hardcoded in the Dockerfile — it comes from
+# here. Changing users means rebuilding: run.sh --rebuild.
+BUILD_ARGS=(
+  --build-arg "SANDBOX_USER=$(id -un)"
+  --build-arg "SANDBOX_UID=$(id -u)"
+  --build-arg "SANDBOX_HOME=$HOME"
+)
+
 if [ "$FORCE_BUILD" = 1 ] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-  docker build -t "$IMAGE" "$DIR"
+  docker build "${BUILD_ARGS[@]}" -t "$IMAGE" "$DIR"
 fi
 
 # The container keeps its OWN Claude login, fully separate from the host's
@@ -152,14 +171,14 @@ if ! python3 -c "import json,sys; sys.exit(0 if json.load(open('$CRED')).get('cl
 fi
 
 GITCONFIG_MOUNT=()
-[ -f "$HOME/.gitconfig" ] && GITCONFIG_MOUNT=(-v "$HOME/.gitconfig:/Users/manthan/.gitconfig:ro")
+[ -f "$HOME/.gitconfig" ] && GITCONFIG_MOUNT=(-v "$HOME/.gitconfig:$HOME/.gitconfig:ro")
 
 # GitHub CLI: share the host's gh login read-only. entrypoint.sh copies it to a
 # writable container-local ~/.config/gh (so gh never writes back to the host)
 # and switches git_protocol to https, since the image has no ssh.
 GH_MOUNT=()
 if [ -d "$HOME/.config/gh" ]; then
-  GH_MOUNT=(-v "$HOME/.config/gh:/Users/manthan/.config/gh-host:ro")
+  GH_MOUNT=(-v "$HOME/.config/gh:$HOME/.config/gh-host:ro")
   if ! gh auth status >/dev/null 2>&1; then
     echo "claude-sandbox: host 'gh' is not logged in — run 'gh auth login' on the Mac to enable gh in the sandbox." >&2
   fi
@@ -202,13 +221,14 @@ exec docker run -it --rm \
   ${ENV_OPTS[@]+"${ENV_OPTS[@]}"} \
   ${SHELL_OPTS[@]+"${SHELL_OPTS[@]}"} \
   -v "$PROJECT:$PROJECT" \
-  -v "$HOME/.claude:/Users/manthan/.claude" \
-  -v "$HOME/.claude.json:/Users/manthan/.claude.json" \
-  -v "$HOME/.config/ccstatusline:/Users/manthan/.config/ccstatusline:ro" \
-  -v "$CRED:/Users/manthan/.claude/.credentials.json" \
-  -v "$DIR/shared:/Users/manthan/claude-container/shared" \
-  -v "$DIR/bundle-cache:/Users/manthan/.cache/bundle" \
-  -v "$DIR/go-cache:/Users/manthan/go" \
+  -v "$HOME/.claude:$HOME/.claude" \
+  -v "$HOME/.claude.json:$HOME/.claude.json" \
+  -v "$HOME/.config/ccstatusline:$HOME/.config/ccstatusline:ro" \
+  -v "$CRED:$HOME/.claude/.credentials.json" \
+  -v "$DIR/shared:$DIR/shared" \
+  -v "$DIR/bundle-cache:$HOME/.cache/bundle" \
+  -v "$DIR/go-cache:$HOME/go" \
+  -v "$DIR/playwright-cache:/opt/ms-playwright" \
   ${GITCONFIG_MOUNT[@]+"${GITCONFIG_MOUNT[@]}"} \
   ${GH_MOUNT[@]+"${GH_MOUNT[@]}"} \
   ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"} \
