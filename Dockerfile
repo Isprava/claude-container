@@ -127,14 +127,24 @@ RUN useradd -m -u ${SANDBOX_UID} -d ${SANDBOX_HOME} -s /bin/zsh ${SANDBOX_USER}
 # Container-local rbenv + Ruby (host ~/.rbenv is macOS binaries — unusable
 # here). Installed as the sandbox user so gem installs work without sudo. Gems
 # land in BUNDLE_PATH, which run.sh persists on the host across containers.
-USER ${SANDBOX_USER}
-RUN git clone --depth 1 https://github.com/rbenv/rbenv.git ${SANDBOX_HOME}/.rbenv \
-    && git clone --depth 1 https://github.com/rbenv/ruby-build.git ${SANDBOX_HOME}/.rbenv/plugins/ruby-build \
-    && ${SANDBOX_HOME}/.rbenv/bin/rbenv install 3.4.1 \
-    && ${SANDBOX_HOME}/.rbenv/bin/rbenv global 3.4.1 \
-    && RBENV_VERSION=3.4.1 ${SANDBOX_HOME}/.rbenv/shims/gem install bundler -v 2.6.7 \
-    && ${SANDBOX_HOME}/.rbenv/bin/rbenv rehash
-USER root
+#
+# Dropped to that user with `su` inside a single root step rather than with a
+# `USER ${SANDBOX_USER}` / `USER root` pair around it. A `USER <name>` makes
+# the builder resolve the name against the snapshot's /etc/passwd, and on
+# Docker Desktop's builder the step following the switch back dies with
+# "unable to find user root: no matching entries in passwd file" — the Go
+# download below was the visible casualty. OrbStack resolves it fine, so this
+# only ever bit teammates not on OrbStack. Every step staying root avoids the
+# lookup entirely. RBENV_ROOT is set explicitly so rbenv does not depend on
+# whatever HOME su hands it.
+RUN su "${SANDBOX_USER}" -s /bin/bash -c "set -eu; \
+      export HOME='${SANDBOX_HOME}' RBENV_ROOT='${SANDBOX_HOME}/.rbenv'; \
+      git clone --depth 1 https://github.com/rbenv/rbenv.git \"\$RBENV_ROOT\"; \
+      git clone --depth 1 https://github.com/rbenv/ruby-build.git \"\$RBENV_ROOT/plugins/ruby-build\"; \
+      \"\$RBENV_ROOT/bin/rbenv\" install 3.4.1; \
+      \"\$RBENV_ROOT/bin/rbenv\" global 3.4.1; \
+      RBENV_VERSION=3.4.1 \"\$RBENV_ROOT/shims/gem\" install bundler -v 2.6.7; \
+      \"\$RBENV_ROOT/bin/rbenv\" rehash"
 ENV PATH=${SANDBOX_HOME}/.rbenv/shims:${SANDBOX_HOME}/.rbenv/bin:$PATH
 ENV BUNDLE_PATH=${SANDBOX_HOME}/.cache/bundle
 
