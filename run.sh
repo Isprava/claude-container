@@ -42,8 +42,13 @@ OPTIONS
 
 ENVIRONMENT VARIABLES
   FORWARD_PORTS    Host ports reachable as localhost inside the container.
+                   REPLACES the default list.
                    Default: "5432 6379 3000 6400 8500"  (Postgres, Redis, Rails, ...)
                    e.g. FORWARD_PORTS="5432 6379 3000 8080" run.sh
+  EXTRA_FORWARD_PORTS
+                   Ports APPENDED to the list above, so you can add one without
+                   restating the defaults. e.g. EXTRA_FORWARD_PORTS="8080" run.sh
+                   The full forwarded list is printed at startup.
   ALLOWED_DOMAINS  With --block-net: replace the allowed-domain list.
                    e.g. ALLOWED_DOMAINS="api.anthropic.com claude.ai \
                         platform.claude.com registry.npmjs.org" run.sh --block-net
@@ -119,7 +124,6 @@ FILES
   ~/claude-container/entrypoint.sh           port forwards + starts claude
   ~/claude-container/init-firewall.sh        --block-net iptables rules
   ~/claude-container/container-credentials.json  sandbox's own Claude login
-                                             (git-ignore this; delete to reset)
   ~/claude-container/shared/env-passthrough  env var names to forward
 EOF
 }
@@ -184,8 +188,22 @@ if [ -d "$HOME/.config/gh" ]; then
   fi
 fi
 
+# Resolve the host ports to forward here rather than in the container, so the
+# list can be shown before Claude takes over the terminal. FORWARD_PORTS
+# replaces the defaults, EXTRA_FORWARD_PORTS appends to whichever list is in
+# effect. entrypoint.sh keeps the same defaults as a fallback for a bare
+# `docker run` that bypasses this script.
+DEFAULT_FORWARD_PORTS="5432 6379 3000 6400 8500"
+RESOLVED_PORTS=""
+for port in ${FORWARD_PORTS:-$DEFAULT_FORWARD_PORTS} ${EXTRA_FORWARD_PORTS:-}; do
+  case " $RESOLVED_PORTS " in *" $port "*) continue ;; esac
+  RESOLVED_PORTS="${RESOLVED_PORTS:+$RESOLVED_PORTS }$port"
+done
+printf '\033[33mclaude-sandbox: host ports forwarded to localhost inside the container: %s\033[0m\n' \
+  "${RESOLVED_PORTS:-(none)}" >&2
+
 ENV_OPTS=()
-[ -n "${FORWARD_PORTS:-}" ] && ENV_OPTS+=(-e "FORWARD_PORTS=$FORWARD_PORTS")
+ENV_OPTS+=(-e "FORWARD_PORTS=$RESOLVED_PORTS")
 [ -n "${ALLOWED_DOMAINS:-}" ] && ENV_OPTS+=(-e "ALLOWED_DOMAINS=$ALLOWED_DOMAINS")
 
 # Env vars for the container: shared/env-passthrough is a standard docker

@@ -111,7 +111,10 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 # bun — required by claude-mem plugin hooks
 RUN curl -fsSL https://bun.sh/install | env BUN_INSTALL=/usr/local bash
 
-RUN npm install -g @anthropic-ai/claude-code
+# Pinned so bumping the version busts the layer cache on rebuild; an unpinned
+# install would silently keep whatever version the cached layer has.
+ARG CLAUDE_CODE_VERSION=2.1.260
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # ccstatusline: the host runs it via `npx -y ccstatusline@latest`, which in here
 # would re-download on every fresh container and fail outright under

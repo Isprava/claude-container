@@ -114,18 +114,22 @@ The container reaches the host's local services at `localhost:<port>` via socat 
 | 6400 | project-specific service |
 | 8500 | project-specific service (e.g. Consul) |
 
-Override the list with `FORWARD_PORTS` (replaces the defaults, so repeat any you still need):
+Add to the list with `EXTRA_FORWARD_PORTS` (appended to the defaults), or replace it wholesale with `FORWARD_PORTS` (repeat any default you still need):
 
 ```sh
-FORWARD_PORTS="5432 6379 3000 8080" dangerous_claude
+EXTRA_FORWARD_PORTS="8080 9229" dangerous_claude   # defaults + 8080 + 9229
+FORWARD_PORTS="5432 6379 3000 8080" dangerous_claude  # exactly these four
 ```
+
+The full list actually forwarded is printed at startup, just before Claude launches.
 
 These forwards keep working even under `--block-net` — the firewall always allows traffic to the Docker host gateway.
 
 ### Environment variables
 
 ```sh
-FORWARD_PORTS="5432 6379 3000 8080" dangerous_claude   # host ports reachable as localhost inside
+FORWARD_PORTS="5432 6379 3000 8080" dangerous_claude    # replace the host ports reachable as localhost inside
+EXTRA_FORWARD_PORTS="8080" dangerous_claude            # or just append to the defaults
 ALLOWED_DOMAINS="..." dangerous_claude --block-net     # replace the firewall allowlist (see above)
 ```
 

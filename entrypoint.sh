@@ -7,9 +7,14 @@ SANDBOX_USER="${SANDBOX_USER:-sandbox}"
 
 # Forward localhost service ports to the Mac host so the container reaches the
 # host's local Postgres/Redis/Rails — nothing is installed in the container.
-# Override with e.g. -e FORWARD_PORTS="5432 6379 3000 8080" on docker run.
-for port in ${FORWARD_PORTS:-5432 6379 3000 6400 8500}; do
+# FORWARD_PORTS replaces the default list; EXTRA_FORWARD_PORTS appends to it.
+# The two stay separate so you can add a port without restating the defaults.
+DEFAULT_FORWARD_PORTS="5432 6379 3000 6400 8500"
+FORWARDED_PORTS=""
+for port in ${FORWARD_PORTS:-$DEFAULT_FORWARD_PORTS} ${EXTRA_FORWARD_PORTS:-}; do
+  case " $FORWARDED_PORTS " in *" $port "*) continue ;; esac
   socat "TCP-LISTEN:${port},fork,reuseaddr,bind=127.0.0.1" "TCP:host.docker.internal:${port}" >/dev/null 2>&1 &
+  FORWARDED_PORTS="${FORWARDED_PORTS:+$FORWARDED_PORTS }$port"
 done
 
 # GitHub CLI: run.sh bind-mounts the host's ~/.config/gh read-only at
@@ -43,10 +48,13 @@ if [ -d "$PW_BASE" ]; then
     chown "$SANDBOX_USER:$SANDBOX_USER" "$PW_DIR" 2>/dev/null || true
   fi
 fi
-
 if [ "${BLOCK_EGRESS:-0}" = "1" ]; then
   /usr/local/bin/init-firewall.sh
 fi
+
+# Show what the sandbox can reach on the host before handing over to Claude/the shell.
+printf '\033[33m[claude-container] host ports forwarded to localhost: %s\033[0m\n' \
+  "${FORWARDED_PORTS:-(none)}" >&2
 
 # SANDBOX_SHELL=1 (run.sh --shell) drops into a shell instead of Claude, but
 # still as the sandbox user and still after the setup above — so the port forwards
